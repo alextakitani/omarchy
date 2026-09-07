@@ -131,6 +131,40 @@ assertEqual(menu.searchMatchPriority({ kind: 'action', label: 'Edge', aliases: [
 assertEqual(menu.searchMatchPriority({ kind: 'action', label: 'Docker', aliases: [], id: 'install.development.docker' }, 'docker'), 2, 'menu demotes a management row even when nothing else matches')
 assertEqual(menu.searchMatchPriority({ kind: 'menu', label: 'Install', aliases: [], id: 'install' }, 'install'), 7, 'menu leaves the top-level Install menu itself alone')
 
+// A vendor prefix must not keep a used app under an unused one. "chrom" is a
+// prefix of Chromium but sits mid-label in Google Chrome.
+const chromium = { kind: 'app', matchPriority: 5, frecency: 0, lastUsedAt: 0, score: 20000, path: 'Chromium' }
+const chrome = { kind: 'app', matchPriority: 3, frecency: 3, lastUsedAt: 99, score: 25000, path: 'Google Chrome' }
+assertEqual(menu.rankingTier(chrome), 5, 'menu lifts an app label-substring match into the prefix band')
+assertEqual(menu.rankingTier(chromium), 5, 'menu leaves an app label-prefix match in the prefix band')
+assertEqual(menu.rankingTier({ kind: 'action', matchPriority: 3 }), 3, 'menu bands only application rows, not actions')
+assert(menu.compareSearchRows(chrome, chromium) < 0, 'menu ranks the used app above an unused one despite the vendor prefix')
+// Nothing used: the static order still decides, so this never reshuffles a
+// fresh install.
+assert(
+  menu.compareSearchRows(
+    { kind: 'app', matchPriority: 5, frecency: 0, lastUsedAt: 0, score: 20000, path: 'Chromium' },
+    { kind: 'app', matchPriority: 3, frecency: 0, lastUsedAt: 0, score: 25000, path: 'Google Chrome' }
+  ) < 0,
+  'menu keeps the static order between two apps that have never been used'
+)
+// The band stops at tier 3: a description-only match stays below.
+assert(
+  menu.compareSearchRows(
+    { kind: 'app', matchPriority: 5, frecency: 0, lastUsedAt: 0, score: 20000, path: 'Chromium' },
+    { kind: 'app', matchPriority: 2, frecency: 99, lastUsedAt: 999, score: 0, path: 'Other' }
+  ) < 0,
+  'menu keeps metadata-only app matches below the prefix band however used'
+)
+// An exact match still wins outright.
+assert(
+  menu.compareSearchRows(
+    { kind: 'app', matchPriority: 7, frecency: 0, lastUsedAt: 0, score: 25000, path: 'Chrome' },
+    { kind: 'app', matchPriority: 3, frecency: 99, lastUsedAt: 999, score: 0, path: 'Google Chrome' }
+  ) < 0,
+  'menu keeps an exact app match above a heavily used substring match'
+)
+
 // Frecency decay
 assertEqual(usage.decayFactor(0), 1, 'usage does not decay a brand new activation')
 assert(Math.abs(usage.decayFactor(30 * 86400000) - 0.5) < 1e-9, 'usage halves an activation after the 30 day half-life')

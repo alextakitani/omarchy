@@ -433,8 +433,22 @@ function searchMatchPriority(entry, query) {
 // Ordering for search results: match tier, then frecency, then the existing
 // static relevance. Note searchScore sorts ascending (lower is better) while
 // priority and frecency sort descending.
+// Where a query lands in an application's name is mostly an accident of
+// branding: "chrom" is a prefix of Chromium but sits mid-label in Google
+// Chrome, and the same vendor prefix pushes Microsoft Edge under a bare
+// "Edge". That distinction is too weak to outweigh which browser the user
+// actually opens, so for application rows the label-prefix and label-substring
+// tiers are compared as one band and usage decides inside it. Rows that have
+// never been used keep their static order, so this only ever promotes an app
+// the user has actually chosen.
+function rankingTier(row) {
+  var tier = Number(row && row.matchPriority) || 0
+  if (row && row.kind === "app" && tier === 3) return 5
+  return tier
+}
+
 function compareSearchRows(a, b) {
-  var priority = (Number(b.matchPriority) || 0) - (Number(a.matchPriority) || 0)
+  var priority = rankingTier(b) - rankingTier(a)
   if (priority !== 0) return priority
 
   // Equal-tier rows are ordered by decayed usage. Comparing floats for
@@ -631,6 +645,7 @@ if (typeof module !== "undefined") {
     descriptionTextMatches: descriptionTextMatches,
     matchesQuery: matchesQuery,
     searchMatchPriority: searchMatchPriority,
+    rankingTier: rankingTier,
     compareSearchRows: compareSearchRows,
     searchScore: searchScore,
     displayRow: displayRow
