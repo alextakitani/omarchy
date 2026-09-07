@@ -338,6 +338,53 @@ function matchesQuery(entry, query, visible) {
   return true
 }
 
+// The match-quality tier a row sits in, highest first. Frecency reorders rows
+// *within* a tier but never across one, so a frequently used description match
+// can never displace an exact-labeled result.
+function searchMatchPriority(entry, query) {
+  var needle = String(query || "").toLowerCase().trim()
+  if (!entry || !needle) return 0
+  var label = String(entry.label || "").toLowerCase()
+
+  if (label === needle) return 7
+  // Mirrors searchScore: an app whose name contains the query as a whole word
+  // ("zen" for Zen Browser) belongs in the exact tier.
+  if (entry.kind === "app" && label.split(/\s+/).indexOf(needle) >= 0) return 7
+
+  var aliases = Array.isArray(entry.aliases) ? entry.aliases : []
+  for (var i = 0; i < aliases.length; i++) {
+    if (String(aliases[i] || "").toLowerCase().trim() === needle) return 6
+  }
+  if (label.indexOf(needle) === 0) return 5
+  for (var j = 0; j < aliases.length; j++) {
+    if (String(aliases[j] || "").toLowerCase().trim().indexOf(needle) === 0) return 4
+  }
+  if (label.indexOf(needle) >= 0) return 3
+  if (nameSearchText(entry).indexOf(needle) >= 0) return 2
+  if (descriptionTextMatches(needle, String(entry.description || "").toLowerCase())) return 1
+  return 0
+}
+
+// Ordering for search results: match tier, then frecency, then the existing
+// static relevance. Note searchScore sorts ascending (lower is better) while
+// priority and frecency sort descending.
+function compareSearchRows(a, b) {
+  var priority = (Number(b.matchPriority) || 0) - (Number(a.matchPriority) || 0)
+  if (priority !== 0) return priority
+
+  // Equal-tier rows are ordered by decayed usage. Comparing floats for
+  // equality is pointless, so anything under this counts as a tie and falls
+  // through to the static order.
+  var frecency = (Number(b.frecency) || 0) - (Number(a.frecency) || 0)
+  if (Math.abs(frecency) > 1e-9) return frecency
+
+  var recent = (Number(b.lastUsedAt) || 0) - (Number(a.lastUsedAt) || 0)
+  if (recent !== 0) return recent
+
+  if (a.score !== b.score) return a.score - b.score
+  return String(a.path || "").localeCompare(String(b.path || ""))
+}
+
 function searchScore(items, entry, query) {
   var needle = String(query || "").toLowerCase().trim()
   var label = entry.label.toLowerCase()
@@ -518,6 +565,8 @@ if (typeof module !== "undefined") {
     termInSearchWords: termInSearchWords,
     descriptionTextMatches: descriptionTextMatches,
     matchesQuery: matchesQuery,
+    searchMatchPriority: searchMatchPriority,
+    compareSearchRows: compareSearchRows,
     searchScore: searchScore,
     displayRow: displayRow
   }

@@ -7,6 +7,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/base-test.sh"
 run_node_test <<'JS'
 const fs = require('fs')
 const menu = requireFromRoot('shell/plugins/menu/MenuModel.js')
+const usage = requireFromRoot('shell/plugins/menu/MenuUsage.js')
 const menuQml = fs.readFileSync(path.join(root, 'shell/plugins/menu/Menu.qml'), 'utf8')
 const defaultMenuJsonc = fs.readFileSync(path.join(root, 'default/omarchy/omarchy-menu.jsonc'), 'utf8')
 
@@ -103,6 +104,78 @@ assert(menu.matchesQuery(entry, 'colors', true), 'menu matches aliases')
 assert(!menu.matchesQuery(entry, 'missing', true), 'menu rejects missing terms')
 assert(!menu.matchesQuery(entry, 'theme', false), 'menu hides invisible matches')
 assert(menu.searchScore(merged.items, entry, 'theme') < menu.searchScore(merged.items, entry, 'appearance'), 'menu scores name matches above description matches')
+
+// Match tiers
+assertEqual(menu.searchMatchPriority({ kind: 'action', label: 'Theme', aliases: [] }, 'theme'), 7, 'menu puts an exact label in the top tier')
+assertEqual(menu.searchMatchPriority({ kind: 'app', label: 'Zen Browser', aliases: [] }, 'zen'), 7, 'menu keeps whole-word app matches in the exact tier')
+assertEqual(menu.searchMatchPriority({ kind: 'app', label: 'Brave', aliases: ['Browser'] }, 'br'), 5, 'menu treats a label prefix as a strong match')
+assertEqual(menu.searchMatchPriority({ kind: 'app', label: 'Microsoft Edge', aliases: [] }, 'edg'), 3, 'menu ranks label substrings below prefixes')
+assertEqual(menu.searchMatchPriority({ kind: 'action', label: 'Help', aliases: [], description: 'read the guide' }, 'guide'), 1, 'menu gives description-only matches the weakest tier')
+
+// Frecency decay
+assertEqual(usage.decayFactor(0), 1, 'usage does not decay a brand new activation')
+assert(Math.abs(usage.decayFactor(30 * 86400000) - 0.5) < 1e-9, 'usage halves an activation after the 30 day half-life')
+assert(Math.abs(usage.decayFactor(60 * 86400000) - 0.25) < 1e-9, 'usage quarters an activation after two half-lives')
+assertEqual(usage.decayFactor(-86400000), 1, 'usage never boosts a record stamped in the future')
+
+// Recording
+const t0 = 1700000000000
+const once = usage.record({}, 'apps.brave', 'app', t0)
+assertEqual(once['apps.brave'].count, 1, 'usage counts the first activation')
+assertEqual(once['apps.brave'].score, 1, 'usage scores an app activation at full weight')
+assertEqual(usage.score(once, 'apps.brave', t0), 1, 'usage reads back an undecayed score')
+assert(Math.abs(usage.score(once, 'apps.brave', t0 + 30 * 86400000) - 0.5) < 1e-9, 'usage decays a stored score on read')
+
+// A second activation folds onto the decayed carry, not the raw prior score.
+const twice = usage.record(once, 'apps.brave', 'app', t0 + 30 * 86400000)
+assert(Math.abs(twice['apps.brave'].score - 1.5) < 1e-9, 'usage adds new activations onto the decayed carry')
+assertEqual(twice['apps.brave'].count, 2, 'usage keeps a lifetime activation count')
+assertDeepEqual(usage.record({}, '', 'app', t0), {}, 'usage ignores an activation with no item id')
+
+// This is the property a raw counter cannot express: an entry used heavily
+// long ago must lose to one used lightly but recently.
+const stale = usage.record({}, 'apps.old', 'app', t0)
+let heavy = stale
+for (let i = 0; i < 20; i++) heavy = usage.record(heavy, 'apps.old', 'app', t0 + i * 3600000)
+const fresh = usage.record({}, 'apps.new', 'app', t0 + 400 * 86400000)
+const now = t0 + 400 * 86400000
+assert(usage.score(heavy, 'apps.old', now) < usage.score(fresh, 'apps.new', now), 'usage ranks a recent activation above a stale pile of old ones')
+assert(usage.count(heavy, 'apps.old') > usage.count(fresh, 'apps.new'), 'usage still tracks that the stale entry had more total activations')
+
+// Weights
+assertEqual(usage.weightFor('app'), 1, 'usage weights app activations fully')
+assertEqual(usage.weightFor('menu'), 0.6, 'usage discounts menu traversal')
+assertEqual(usage.weightFor('nonsense'), 1, 'usage falls back to full weight for unknown kinds')
+
+// Persistence
+assertDeepEqual(usage.parse(usage.serialize({ 'apps.brave': { score: 2, scoredAt: t0, count: 2 } })), { 'apps.brave': { score: 2, scoredAt: t0, count: 2 } }, 'usage round-trips records through the state file format')
+assertDeepEqual(usage.parse('{broken'), {}, 'usage ignores corrupt state')
+assertDeepEqual(usage.parse('{"version":1,"records":{"a":{"count":3}}}'), {}, 'usage ignores state written by an older version')
+assertDeepEqual(usage.parse('{"version":2,"records":{"a":{"score":0,"scoredAt":1}}}'), {}, 'usage drops records with no score')
+assertDeepEqual(usage.prune({ keep: { score: 1, scoredAt: now, count: 1 }, drop: { score: 1, scoredAt: t0 - 900 * 86400000, count: 1 } }, now), { keep: { score: 1, scoredAt: now, count: 1 } }, 'usage prunes records that decayed into noise')
+
+// Ordering
+assert(
+  menu.compareSearchRows(
+    { matchPriority: 5, frecency: 8, lastUsedAt: 100, score: 20, path: 'Brave' },
+    { matchPriority: 5, frecency: 1, lastUsedAt: 200, score: 0, path: 'Browser' }
+  ) < 0,
+  'menu ranks equally strong matches by frecency'
+)
+assert(
+  menu.compareSearchRows(
+    { matchPriority: 7, frecency: 0, lastUsedAt: 0, score: 20, path: 'Install' },
+    { matchPriority: 5, frecency: 99, lastUsedAt: 999, score: 0, path: 'Input' }
+  ) < 0,
+  'menu keeps exact matches above heavily used weaker matches'
+)
+assert(
+  menu.compareSearchRows(
+    { matchPriority: 5, frecency: 0, lastUsedAt: 0, score: 10, path: 'A' },
+    { matchPriority: 5, frecency: 0, lastUsedAt: 0, score: 30, path: 'B' }
+  ) < 0,
+  'menu falls back to the static score when nothing has been used'
+)
 
 assertDeepEqual(
   menu.displayRow(merged.items, merged.itemOrder, {}, {}, entry, 'Style', 12, 'search'),
