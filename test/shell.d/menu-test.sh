@@ -112,6 +112,25 @@ assertEqual(menu.searchMatchPriority({ kind: 'app', label: 'Brave', aliases: ['B
 assertEqual(menu.searchMatchPriority({ kind: 'app', label: 'Microsoft Edge', aliases: [] }, 'edg'), 3, 'menu ranks label substrings below prefixes')
 assertEqual(menu.searchMatchPriority({ kind: 'action', label: 'Help', aliases: [], description: 'read the guide' }, 'guide'), 1, 'menu gives description-only matches the weakest tier')
 
+// Management rows must not outrank the app they are named after. "Remove >
+// Browser > Edge" is labelled "Edge", so it prefix-matches "edg" while the app
+// "Microsoft Edge" only substring-matches it.
+const edgeApp = { kind: 'app', label: 'Microsoft Edge', aliases: [], id: 'apps.microsoft-edge' }
+const edgeRemove = { kind: 'action', label: 'Edge', aliases: [], id: 'remove.browser.edge' }
+const edgeSetup = { kind: 'action', label: 'Edge', aliases: [], id: 'setup.default.browser.edge' }
+const edgeUpdate = { kind: 'action', label: 'Edge', aliases: [], id: 'update.channel.edge' }
+assert(menu.searchMatchPriority(edgeApp, 'edg') > menu.searchMatchPriority(edgeRemove, 'edg'), 'menu ranks an installed app above the remove row named after it')
+assert(menu.searchMatchPriority(edgeApp, 'edg') > menu.searchMatchPriority(edgeSetup, 'edg'), 'menu ranks an installed app above a default-browser row named after it')
+assert(menu.searchMatchPriority(edgeApp, 'edg') > menu.searchMatchPriority(edgeUpdate, 'edg'), 'menu ranks an installed app above an update-channel row named after it')
+assertEqual(menu.searchMatchPriority(edgeRemove, 'edg'), 2, 'menu keeps a demoted management row findable rather than hiding it')
+// Naming the verb is how the management row is still reachable.
+assertEqual(menu.searchMatchPriority(edgeRemove, 'remove edge'), 7, 'menu restores the remove row when the query names the verb')
+assertEqual(menu.searchMatchPriority(edgeSetup, 'default edge'), 7, 'menu restores the setup row when the query names the verb')
+assertEqual(menu.searchMatchPriority({ kind: 'action', label: 'Edge', aliases: [], id: 'install.browser.edge' }, 'install edge'), 7, 'menu restores the install row when the query names the verb')
+// Management rows with no app competing for the name keep ranking normally.
+assertEqual(menu.searchMatchPriority({ kind: 'action', label: 'Docker', aliases: [], id: 'install.development.docker' }, 'docker'), 2, 'menu demotes a management row even when nothing else matches')
+assertEqual(menu.searchMatchPriority({ kind: 'menu', label: 'Install', aliases: [], id: 'install' }, 'install'), 7, 'menu leaves the top-level Install menu itself alone')
+
 // Frecency decay
 assertEqual(usage.decayFactor(0), 1, 'usage does not decay a brand new activation')
 assert(Math.abs(usage.decayFactor(30 * 86400000) - 0.5) < 1e-9, 'usage halves an activation after the 30 day half-life')
